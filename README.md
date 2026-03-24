@@ -252,3 +252,5 @@ If you use this library, please cite:
 ## License
 
 Apache 2.0 — [Enimble Solutions AB](https://enimble.com)
+
+**GitHub**: [github.com/Heigke/NSRAM](https://github.com/Heigke/NSRAM) | **PyPI**: [pypi.org/project/nsram](https://pypi.org/project/nsram/)
