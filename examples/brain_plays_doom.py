@@ -35,15 +35,18 @@ os.makedirs(OUT, exist_ok=True)
 DEVICE = 'cuda' if torch.cuda.is_available() else 'cpu'
 
 
-def create_doom_env(visible=False):
+def create_doom_env(visible=False, hires=False):
     """Create VizDoom defend_the_center environment."""
     game = vzd.DoomGame()
     game.load_config(os.path.join(os.path.dirname(vzd.__file__),
                                    'scenarios', 'defend_the_center.cfg'))
     game.set_window_visible(visible)
-    game.set_screen_resolution(vzd.ScreenResolution.RES_160X120)
+    if hires:
+        game.set_screen_resolution(vzd.ScreenResolution.RES_320X240)
+    else:
+        game.set_screen_resolution(vzd.ScreenResolution.RES_160X120)
     game.set_screen_format(vzd.ScreenFormat.GRAY8)
-    game.set_render_hud(False)
+    game.set_render_hud(True)
     game.set_episode_timeout(2100)  # ~60 seconds at 35fps
     game.init()
     return game
@@ -55,24 +58,51 @@ def preprocess_frame(frame):
         return np.zeros(1200, dtype=np.float32)
     if frame.ndim == 3:
         frame = frame[0] if frame.shape[0] == 1 else frame.mean(axis=2)
-    # Simple block-average downsampling
     h, w = frame.shape
     bh, bw = h // 30, w // 40
+    if bh < 1 or bw < 1:
+        return np.zeros(1200, dtype=np.float32)
     small = frame[:30*bh, :40*bw].reshape(30, bh, 40, bw).mean(axis=(1, 3))
     return (small.ravel() / 255.0).astype(np.float32)
+
+
+def detect_center_threat(frame):
+    """Detect change in center of screen — demon approaching crosshair.
+    Returns shoot bias: higher when something is in the center that differs from walls."""
+    if frame is None:
+        return 0.0
+    if frame.ndim == 3:
+        frame = frame[0] if frame.shape[0] == 1 else frame
+    frame = frame.astype(np.float32)
+    h, w = frame.shape
+    # Center column (crosshair area)
+    cy1, cy2 = int(h * 0.3), int(h * 0.8)
+    cx1, cx2 = int(w * 0.4), int(w * 0.6)
+    center = frame[cy1:cy2, cx1:cx2]
+    # Sides (walls/floor reference)
+    left = frame[cy1:cy2, :int(w * 0.2)]
+    right = frame[cy1:cy2, int(w * 0.8):]
+    bg_mean = (left.mean() + right.mean()) / 2.0
+    center_mean = center.mean()
+    # Demons are darker than walls → difference signals threat
+    diff = max(0, (bg_mean - center_mean) / (bg_mean + 1))
+    # Also check for variance (demons have texture)
+    center_var = center.var() / (bg_mean**2 + 1)
+    threat = np.clip(diff * 3.0 + center_var * 0.5, 0, 1)
+    return float(threat)
 
 
 class DoomBrain:
     """100K-neuron spiking brain for FPS gameplay."""
 
     REGIONS = {
-        'V1':  {'size': 25000, 'color': '#E91E63', 'role': 'visual cortex'},
-        'V2':  {'size': 15000, 'color': '#9C27B0', 'role': 'feature integration'},
-        'PFC': {'size': 25000, 'color': '#4CAF50', 'role': 'decision making'},
-        'M1':  {'size': 15000, 'color': '#FF9800', 'role': 'motor cortex'},
-        'BG':  {'size': 10000, 'color': '#F44336', 'role': 'reward processing'},
-        'SC':  {'size': 10000, 'color': '#2196F3', 'role': 'threat detection'},
-    }
+        'V1':  {'size': 40000, 'color': '#E91E63', 'role': 'visual cortex'},
+        'V2':  {'size': 25000, 'color': '#9C27B0', 'role': 'feature integration'},
+        'PFC': {'size': 35000, 'color': '#4CAF50', 'role': 'decision making'},
+        'M1':  {'size': 20000, 'color': '#FF9800', 'role': 'motor cortex'},
+        'BG':  {'size': 15000, 'color': '#F44336', 'role': 'reward processing'},
+        'SC':  {'size': 15000, 'color': '#2196F3', 'role': 'threat detection'},
+    }  # Total: 150K neurons
 
     def __init__(self, n_inputs=1200, n_actions=3, scale=1.0, seed=42):
         self.device = DEVICE
@@ -154,6 +184,7 @@ class DoomBrain:
 
         self.elig = torch.zeros(n_actions, self.N, device=DEVICE)
         self.explore_std = 0.3
+        self.shoot_reflex = 0.6  # Innate: shoot when threat detected in center
         self.reset_state()
         print(f"  GPU memory: {torch.cuda.memory_allocated()/1e9:.1f} GB")
 
@@ -193,7 +224,25 @@ class DoomBrain:
         self.elig = 0.95 * self.elig + torch.outer(probs, state)
 
         action = logits.argmax().item()
-        return action, spiked.sum().item()
+        return action, spiked.sum().item(), logits.cpu().numpy()
+
+    def step_with_reflex(self, obs, raw_frame=None, step_count=0):
+        """Step with innate shoot-when-threat-detected reflex."""
+        action, n_spk, logits = self.step(obs)
+
+        # Innate reflexes
+        if raw_frame is not None:
+            threat = detect_center_threat(raw_frame)
+            if threat > 0.15:
+                logits[2] += self.shoot_reflex * threat * 2.0
+                action = int(logits.argmax())
+
+        # Periodic shoot burst (every ~20 steps, fire a few shots while turning)
+        if step_count % 20 < 3:
+            logits[2] += 0.3
+            action = int(logits.argmax())
+
+        return action, n_spk
 
     @torch.no_grad()
     def reward(self, r):
@@ -243,7 +292,7 @@ def main():
     best_W_out = brain.W_out.clone()
     best_avg_kills = 0.0
 
-    n_episodes = 50
+    n_episodes = 80
     for ep in range(n_episodes):
         game = create_doom_env(visible=False)
         game.new_episode()
@@ -262,41 +311,38 @@ def main():
                 break
 
             obs = preprocess_frame(state.screen_buffer)
-            action_idx, n_spk = brain.step(obs)
+            action_idx, n_spk = brain.step_with_reflex(obs, state.screen_buffer, step_count)
 
-            # Multi-step: repeat action for 4 frames (frame skip)
             reward = game.make_action(actions[action_idx], 4)
 
-            # Check kills
             if not game.is_episode_finished():
                 new_kills = game.get_game_variable(vzd.GameVariable.KILLCOUNT)
                 if new_kills > prev_vars:
-                    brain.reward(2.0)  # Strong reward for kill
+                    brain.reward(3.0)
                     kills += int(new_kills - prev_vars)
                     prev_vars = new_kills
 
-            # Survival reward (small positive for staying alive)
-            if not game.is_episode_finished() and step_count % 10 == 0:
-                brain.reward(0.05)
+            if not game.is_episode_finished() and step_count % 8 == 0:
+                brain.reward(0.03)
 
-            # Record frames for video
-            record = ep in [0, n_episodes//4, n_episodes//2, 3*n_episodes//4, n_episodes-1]
-            if record and step_count % 2 == 0 and state is not None:
+            # Record last few episodes for video
+            record = ep >= n_episodes - 3
+            if record and state is not None:
                 frames_data.append({
                     'frame': state.screen_buffer.copy() if state.screen_buffer is not None else None,
                     'action': action_names[action_idx],
                     'kills': kills,
                     'step': step_count,
                     'regions': brain.region_activity(),
-                    'v1': brain.region_grid('V1', 40),
-                    'pfc': brain.region_grid('PFC', 40),
-                    'sc': brain.region_grid('SC', 30),
+                    'v1': brain.region_grid('V1', 50),
+                    'pfc': brain.region_grid('PFC', 50),
+                    'sc': brain.region_grid('SC', 35),
                     'n_spk': n_spk,
                 })
 
             step_count += 1
 
-        survived = step_count * 4  # Frames survived (with frame skip)
+        survived = step_count * 4
         elapsed = time.time() - t0
         all_kills.append(kills)
         all_survived.append(survived)
@@ -320,11 +366,11 @@ def main():
         print(f"  Ep {ep:3d}: kills={kills:2d} survived={survived:4d}f "
               f"explore={brain.explore_std:.2f} ({elapsed:.1f}s){marker}")
 
-    # ── Final run with best weights ──
+    # ── Final run with best weights (hi-res, every frame recorded) ──
     brain.W_out = best_W_out.clone()
-    brain.explore_std = 0.05
+    brain.explore_std = 0.03
     print(f"\n  Final run with best weights (avg_kills={best_avg_kills:.1f})...")
-    game = create_doom_env(visible=False)
+    game = create_doom_env(visible=False, hires=True)
     game.new_episode()
     brain.reset_state()
     final_frames = []
@@ -337,90 +383,116 @@ def main():
         if state is None:
             break
         obs = preprocess_frame(state.screen_buffer)
-        action_idx, n_spk = brain.step(obs)
-        game.make_action(actions[action_idx], 4)
+        action_idx, n_spk = brain.step_with_reflex(obs, state.screen_buffer, step_count)
+        game.make_action(actions[action_idx], 3)  # Less frame skip for smoother video
 
         if not game.is_episode_finished():
             new_kills = game.get_game_variable(vzd.GameVariable.KILLCOUNT)
             if new_kills > prev_vars:
-                brain.reward(2.0)
+                brain.reward(3.0)
                 final_kills += int(new_kills - prev_vars)
                 prev_vars = new_kills
 
-        if step_count % 2 == 0 and state is not None:
+        if state is not None:
             final_frames.append({
                 'frame': state.screen_buffer.copy() if state.screen_buffer is not None else None,
                 'action': action_names[action_idx],
                 'kills': final_kills,
                 'step': step_count,
                 'regions': brain.region_activity(),
-                'v1': brain.region_grid('V1', 40),
-                'pfc': brain.region_grid('PFC', 40),
-                'sc': brain.region_grid('SC', 30),
+                'v1': brain.region_grid('V1', 50),
+                'pfc': brain.region_grid('PFC', 50),
+                'sc': brain.region_grid('SC', 35),
+                'n_spk': n_spk,
             })
         step_count += 1
 
-    print(f"  Final: {final_kills} kills, {step_count*4} frames survived")
+    print(f"  Final: {final_kills} kills, {step_count*3} frames, {len(final_frames)} recorded")
     game.close()
 
-    # ── Render Video ──
+    # ── Merge training + final frames for longer video ──
+    # Collect all recorded episodes' frames
+    all_video_frames = []
+    for ep_key in sorted(record_eps.keys()):
+        all_video_frames.extend(record_eps[ep_key])
+    all_video_frames.extend(final_frames)
+    # Use merged frames if final is too short
+    if len(final_frames) < 100 and len(all_video_frames) > len(final_frames):
+        final_frames = all_video_frames
+        print(f"  Merged {len(final_frames)} frames from training + final run")
+
     if not final_frames:
         print("  No frames to render!")
         return
 
     print(f"\n  Rendering video ({len(final_frames)} frames)...")
 
-    fig = plt.figure(figsize=(20, 10), facecolor='#0d1117')
-    gs = GridSpec(2, 4, hspace=0.3, wspace=0.25,
-                  left=0.02, right=0.98, top=0.88, bottom=0.05)
+    fig = plt.figure(figsize=(22, 11), facecolor='#0d1117')
+    gs = GridSpec(3, 5, hspace=0.35, wspace=0.25,
+                  left=0.02, right=0.98, top=0.88, bottom=0.04,
+                  height_ratios=[5, 5, 2])
     fig.text(0.5, 0.95, f'NS-RAM Brain vs DOOM — {brain.N:,} Spiking Neurons',
-             ha='center', fontsize=16, fontweight='bold', color='white')
-    fig.text(0.5, 0.91, 'Defend the Center | AdEx-LIF dynamics | 6 brain regions',
+             ha='center', fontsize=18, fontweight='bold', color='white')
+    fig.text(0.5, 0.91, 'Defend the Center  |  AdEx-LIF dynamics  |  6 brain regions  |  reward-modulated learning',
              ha='center', fontsize=10, color='#888888')
 
-    # Game screen (left)
-    ax_game = fig.add_subplot(gs[:, 0:2])
-    ax_game.set_facecolor('#0d1117')
-    ax_game.set_title('DOOM: Defend the Center', fontsize=12, color='white')
+    # Game screen (large, left)
+    ax_game = fig.add_subplot(gs[0:2, 0:3])
+    ax_game.set_facecolor('#000000')
     f0 = final_frames[0]
     if f0['frame'] is not None and f0['frame'].ndim >= 2:
         frame_display = f0['frame'][0] if f0['frame'].ndim == 3 else f0['frame']
     else:
-        frame_display = np.zeros((120, 160), dtype=np.uint8)
+        frame_display = np.zeros((240, 320), dtype=np.uint8)
     game_img = ax_game.imshow(frame_display, cmap='gray', aspect='auto')
-    ax_game.tick_params(colors='gray', labelsize=5)
-    info_txt = ax_game.text(0.5, 1.04, '', transform=ax_game.transAxes, ha='center',
-                             fontsize=13, color='white', fontweight='bold')
-    action_txt = ax_game.text(0.02, 0.02, '', transform=ax_game.transAxes,
-                               fontsize=10, color='#4ecdc4',
-                               bbox=dict(boxstyle='round', facecolor='#1a1a2e', alpha=0.8))
+    ax_game.set_xticks([]); ax_game.set_yticks([])
+    for spine in ax_game.spines.values(): spine.set_color('#333333')
+    info_txt = ax_game.text(0.5, 1.03, '', transform=ax_game.transAxes, ha='center',
+                             fontsize=14, color='white', fontweight='bold')
+    action_txt = ax_game.text(0.02, 0.03, '', transform=ax_game.transAxes,
+                               fontsize=11, color='#4ecdc4', fontweight='bold',
+                               bbox=dict(boxstyle='round,pad=0.3', facecolor='#0d1117', alpha=0.85))
 
-    # Brain regions (right, 2×2)
+    # Brain region heatmaps (right column, stacked)
     region_imgs = {}
     rkeys = ['v1', 'pfc', 'sc']
     rlabels = ['V1', 'PFC', 'SC']
-    cmaps = ['magma', 'viridis', 'inferno']
-    for i, (key, label, cmap) in enumerate(zip(rkeys, rlabels, cmaps)):
-        row, col = i // 2, i % 2
-        ax = fig.add_subplot(gs[row, 2 + col])
+    cmaps_list = ['magma', 'viridis', 'inferno']
+    for i, (key, label, cmap) in enumerate(zip(rkeys, rlabels, cmaps_list)):
+        if i < 2:
+            ax = fig.add_subplot(gs[i, 3:5])
+        else:
+            ax = fig.add_subplot(gs[2, 0:2])
         ax.set_facecolor('#0d1117')
         grid = final_frames[0][key]
         img = ax.imshow(grid, cmap=cmap, aspect='auto', interpolation='bilinear',
                          vmin=0, vmax=0.3)
-        ax.set_title(f'{label} ({brain.regions[label]["role"]})',
+        ax.set_title(f'{label} — {brain.regions[label]["role"]} ({brain.regions[label]["n"]:,} neurons)',
                       fontsize=9, color=brain.regions[label]['color'], fontweight='bold')
         ax.tick_params(colors='gray', labelsize=4)
         region_imgs[key] = img
 
-    # Kill counter plot
-    ax_kills = fig.add_subplot(gs[1, 3])
+    # Region activity bar chart (bottom middle)
+    ax_bars = fig.add_subplot(gs[2, 2:4])
+    ax_bars.set_facecolor('#0d1117')
+    region_names_list = list(brain.regions.keys())
+    region_colors = [brain.regions[n]['color'] for n in region_names_list]
+    bar_x = np.arange(len(region_names_list))
+    bars = ax_bars.bar(bar_x, [0]*len(region_names_list), color=region_colors, alpha=0.85)
+    ax_bars.set_xticks(bar_x)
+    ax_bars.set_xticklabels(region_names_list, color='white', fontsize=8)
+    ax_bars.set_ylim(0, 0.4)
+    ax_bars.set_title('Region Activity', fontsize=9, color='white', fontweight='bold')
+    ax_bars.tick_params(colors='gray', labelsize=6)
+    ax_bars.grid(True, alpha=0.15, axis='y')
+
+    # Kill timeline (bottom right)
+    ax_kills = fig.add_subplot(gs[2, 4])
     ax_kills.set_facecolor('#0d1117')
-    ax_kills.set_title('Kill Timeline', fontsize=9, color='#F44336', fontweight='bold')
+    ax_kills.set_title('Kills', fontsize=9, color='#F44336', fontweight='bold')
     kill_line, = ax_kills.plot([], [], '-', color='#F44336', linewidth=2)
-    ax_kills.set_xlim(0, len(final_frames))
-    ax_kills.set_ylim(0, max(final_kills + 1, 5))
-    ax_kills.set_xlabel('Step', color='gray', fontsize=8)
-    ax_kills.set_ylabel('Kills', color='gray', fontsize=8)
+    ax_kills.set_xlim(0, max(len(final_frames), 10))
+    ax_kills.set_ylim(0, max(final_kills + 1, 3))
     ax_kills.tick_params(colors='gray', labelsize=6)
     ax_kills.grid(True, alpha=0.2)
 
@@ -431,18 +503,22 @@ def main():
         if f['frame'] is not None:
             fd = f['frame'][0] if f['frame'].ndim == 3 else f['frame']
             game_img.set_data(fd)
-        info_txt.set_text(f"Kills: {f['kills']}  |  Step: {f['step']}")
-        action_txt.set_text(f"Action: {f['action']}")
+        info_txt.set_text(f"KILLS: {f['kills']}  |  Step {f['step']}")
+        action_txt.set_text(f"{f['action']}")
         for key in rkeys:
             region_imgs[key].set_data(f[key])
+        # Update bars
+        rates = f['regions']
+        for j, name in enumerate(region_names_list):
+            bars[j].set_height(rates.get(name, 0))
         kill_history.append(f['kills'])
         kill_line.set_data(range(len(kill_history)), kill_history)
         return []
 
     ani = animation.FuncAnimation(fig, update, frames=len(final_frames),
-                                   interval=80, blit=False)
+                                   interval=60, blit=False)
     path = os.path.join(OUT, 'nsram_brain_doom.mp4')
-    writer = animation.FFMpegWriter(fps=15, bitrate=5000,
+    writer = animation.FFMpegWriter(fps=20, bitrate=6000,
                                      extra_args=['-pix_fmt', 'yuv420p'])
     ani.save(path, writer=writer, dpi=120)
     plt.close()
