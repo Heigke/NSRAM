@@ -103,37 +103,54 @@ def waveform_classification(states, inputs, washout=500, n_classes=4):
     return (np.argmax(preds, axis=1) == yl[s:]).mean()
 
 
-def mackey_glass(states, washout=500, tau=17, n_ahead=1):
+def _generate_mg(length, tau_mg=17):
+    """Generate Mackey-Glass chaotic time series."""
+    mg = np.zeros(length + tau_mg + 200)
+    mg[:tau_mg + 1] = 0.9
+    beta, gamma, n_exp = 0.2, 0.1, 10
+    for t in range(tau_mg, len(mg) - 1):
+        x_tau = mg[t - tau_mg]
+        mg[t + 1] = mg[t] + (beta * x_tau / (1 + x_tau**n_exp) - gamma * mg[t])
+    return mg[200:200 + length]
+
+
+def mackey_glass(states=None, washout=500, tau=17, n_ahead=1,
+                 reservoir=None, n_steps=3000):
     """Mackey-Glass chaotic time series prediction.
 
-    Generates the MG series: dx/dt = β*x(t-τ)/(1+x(t-τ)^n) - γ*x(t)
-    and measures prediction R² at n_ahead steps.
+    The standard RC benchmark: drive reservoir with MG series, predict n_ahead.
+    dx/dt = β*x(t-τ)/(1+x(t-τ)^n) - γ*x(t), τ=17 is chaotic.
 
-    This is THE standard chaotic prediction benchmark for reservoir computing.
+    Two modes:
+      1. Standalone (preferred): pass reservoir=, drives it with MG, predicts.
+      2. States-based: pass states= from a MG-driven reservoir.
 
     Args:
-        states: (N, T) reservoir state matrix
+        states: (N, T) pre-computed states (mode 2) — must be from MG input!
         washout: Washout period
-        tau: Delay parameter (17 = chaotic)
-        n_ahead: Prediction horizon
+        tau: MG delay parameter (17 = chaotic)
+        n_ahead: Prediction horizon (1 = one-step-ahead)
+        reservoir: Object with .transform(signal) → (N, T) (mode 1, preferred)
+        n_steps: Timesteps (mode 1 only)
 
     Returns:
         float: R² of prediction
     """
-    T = states.shape[1]
-
-    # Generate Mackey-Glass series
-    mg = np.zeros(T + tau + 100)
-    mg[:tau + 1] = 0.9  # Initial condition
-    beta, gamma, n_exp = 0.2, 0.1, 10
-    for t in range(tau, len(mg) - 1):
-        x_tau = mg[t - tau]
-        mg[t + 1] = mg[t] + (beta * x_tau / (1 + x_tau**n_exp) - gamma * mg[t]) * 1.0
-    mg = mg[100:100 + T]  # Discard transient
+    if reservoir is not None:
+        mg = _generate_mg(n_steps, tau)
+        mg_norm = 2.0 * (mg - mg.min()) / (mg.max() - mg.min() + 1e-12) - 1.0
+        states = reservoir.transform(mg_norm)
+        T = states.shape[1]
+        mg_target = mg[:T]
+    elif states is not None:
+        T = states.shape[1]
+        mg_target = _generate_mg(T, tau)
+    else:
+        raise ValueError("Provide reservoir= (mode 1) or states= (mode 2)")
 
     sp = washout + (T - washout) // 2
     X = states[:, washout:T - n_ahead].T
-    y = mg[washout + n_ahead:T]
+    y = mg_target[washout + n_ahead:T]
     s = sp - washout
     if s < 20 or len(y) - s < 20:
         return 0.0

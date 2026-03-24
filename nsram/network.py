@@ -48,10 +48,12 @@ class NSRAMNetwork:
     """
 
     def __init__(self, N: int = 128, n_inputs: int = 1,
-                 connectivity: Literal['sparse', 'small_world', 'dense'] = 'sparse',
+                 connectivity: Literal['sparse', 'small_world', 'dense',
+                                       'scale_free', 'distance_dependent'] = 'sparse',
                  params: Optional[DimensionlessParams] = None,
                  backend: Literal['numpy', 'torch', 'auto'] = 'auto',
-                 seed: int = 42):
+                 seed: int = 42,
+                 dist_lambda: float = 2.0, dist_p0: float = 0.3):
         self.N = N
         self.n_inputs = n_inputs
         self.seed = seed
@@ -109,13 +111,15 @@ class NSRAMNetwork:
 
         self._W = self._build_weights(rng, connectivity,
                                         params.spectral_radius,
-                                        params.connection_prob)
+                                        params.connection_prob,
+                                        dist_lambda, dist_p0)
 
         # Move to GPU if available
         if self.backend == 'torch':
             self._to_device()
 
-    def _build_weights(self, rng, connectivity, sr, p_conn):
+    def _build_weights(self, rng, connectivity, sr, p_conn,
+                       dist_lambda=2.0, dist_p0=0.3):
         N = self.N
         if connectivity == 'sparse':
             mask = rng.rand(N, N) < p_conn
@@ -130,6 +134,35 @@ class NSRAMNetwork:
                     W[i, rng.randint(N)] = rng.randn()
         elif connectivity == 'dense':
             W = (rng.randn(N, N) / np.sqrt(N)).astype(np.float32)
+        elif connectivity == 'scale_free':
+            # Barabási-Albert preferential attachment
+            m = max(1, int(p_conn * N * 0.5))
+            m = min(m, N - 1)
+            W = np.zeros((N, N), dtype=np.float32)
+            for i in range(min(m + 1, N)):
+                for j in range(i + 1, min(m + 1, N)):
+                    W[i, j] = rng.randn()
+                    W[j, i] = rng.randn()
+            degree = np.abs(W).sum(axis=1) + 1e-6
+            for new in range(m + 1, N):
+                probs = degree[:new] / degree[:new].sum()
+                targets = rng.choice(new, size=min(m, new), replace=False, p=probs)
+                for tgt in targets:
+                    W[new, tgt] = rng.randn()
+                    W[tgt, new] = rng.randn()
+                degree[new] = len(targets)
+                degree[targets] += 1
+        elif connectivity == 'distance_dependent':
+            # Neurons on 2D grid, p(i,j) = p0 * exp(-d/lambda)
+            side = int(np.ceil(np.sqrt(N)))
+            pos = np.array([(i % side, i // side) for i in range(N)], dtype=np.float32)
+            diff = pos[:, None, :] - pos[None, :, :]
+            dist = np.sqrt((diff ** 2).sum(axis=2))
+            p_matrix = dist_p0 * np.exp(-dist / max(dist_lambda, 0.01))
+            np.fill_diagonal(p_matrix, 0)
+            mask = rng.rand(N, N) < p_matrix
+            W = rng.randn(N, N).astype(np.float32) * mask
+            self._neuron_positions = pos
         else:
             raise ValueError(f"Unknown connectivity: {connectivity}")
         np.fill_diagonal(W, 0)
