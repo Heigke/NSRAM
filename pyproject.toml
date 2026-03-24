@@ -1,0 +1,56 @@
+[build-system]
+requires = ["setuptools>=68.0", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "nsram"
+version = "0.5.0"
+description = "NS-RAM: Neuro-Synaptic RAM simulator — floating-body transistor neuron/synapse modeling with charge-trapping plasticity. 14 modules, 5 neuron models, 10 RC benchmarks, spike encoding, analysis tools. 97% XOR, 96.75% MNIST."
+readme = "README.md"
+license = {text = "Apache-2.0"}
+requires-python = ">=3.9"
+authors = [
+    {name = "Enimble Solutions AB"},
+]
+maintainers = [
+    {name = "Enimble Solutions AB"},
+]
+keywords = [
+    "neuromorphic", "spiking-neural-network", "reservoir-computing",
+    "ns-ram", "floating-body", "charge-trapping", "short-term-plasticity",
+    "tsodyks-markram", "adex-lif", "neuroscience", "simulation",
+    "izhikevich", "hodgkin-huxley", "spike-encoding", "mnist",
+    "avalanche", "criticality", "gpu-accelerated",
+]
+classifiers = [
+    "Development Status :: 4 - Beta",
+    "Intended Audience :: Science/Research",
+    "License :: OSI Approved :: Apache Software License",
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3.9",
+    "Programming Language :: Python :: 3.10",
+    "Programming Language :: Python :: 3.11",
+    "Programming Language :: Python :: 3.12",
+    "Topic :: Scientific/Engineering",
+    "Topic :: Scientific/Engineering :: Artificial Intelligence",
+    "Topic :: Scientific/Engineering :: Physics",
+]
+dependencies = [
+    "numpy>=1.21",
+    "scipy>=1.7",
+]
+
+[project.optional-dependencies]
+gpu = ["torch>=2.0"]
+plot = ["matplotlib>=3.5"]
+all = ["torch>=2.0", "matplotlib>=3.5"]
+
+[project.urls]
+Homepage = "https://github.com/Heigke/NSRAM"
+Documentation = "https://github.com/Heigke/NSRAM#readme"
+Repository = "https://github.com/Heigke/NSRAM"
+Issues = "https://github.com/Heigke/NSRAM/issues"
+
+[tool.setuptools.packages.find]
+where = ["."]
+include = ["nsram*"]

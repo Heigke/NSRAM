@@ -1,0 +1,145 @@
+* NS-RAM Cell A: 1.8V NFET with Floating Body in Deep N-Well
+* Target: SkyWater SKY130 130nm
+*
+* This is the primary NS-RAM test cell. The NMOS transistor sits in
+* an isolated P-well (inside DNW), creating a floating body that
+* accumulates charge via avalanche impact ionization.
+*
+* Parasitic lateral NPN: N+(source)=Emitter, P-well=Base, N+(drain)=Collector
+*
+* Nodes:
+*   drain  — collector of parasitic NPN, main current path
+*   gate   — Vg1, controls BVpar via impact ionization modulation
+*   source — emitter of parasitic NPN, grounded
+*   body   — floating P-well, the "membrane potential"
+*   dnw    — deep N-well, biased to positive supply
+*
+* Reference: Pazos et al., Nature 640, 69-76 (2025)
+* ═══════════════════════════════════════════════════════════════════
+
+* ── SKY130 PDK ──
+* Uncomment when PDK is installed:
+* .lib "/usr/share/pdk/sky130A/libs.tech/ngspice/sky130.lib.spice" tt
+
+* ── Fallback: Parametric model matching Pazos SPICE (Zenodo 13843362) ──
+* Use this for pre-tapeout validation without the PDK
+
+* Parasitic NPN BJT (matches avalBJT from Pazos)
+.model nsram_npn NPN(
++   Is=1e-16
++   Bf=50
++   Nf=0.9
++   Ne=1.5
++   Vaf=40
++   Var=10
++   Re=10
++   Rb=10
++   Rc=10
++   Cje=1p
++   Cjc=0.1p
++   Mjc=10
++ )
+
+* NMOS (PTM 130nm, matches Pazos)
+.model nsram_nmos NMOS(
++   VTO=0.432
++   KP=200u
++   GAMMA=0.4
++   PHI=0.65
++   LAMBDA=0.05
++   TOX=3.3n
++ )
+
+* Avalanche Zener (body-drain junction)
+.model nsram_aval D(
++   Is=1e-21
++   Rs=50
++   Cjo=1p
++   M=0.5
++   Nbv=7
++   Bv={bv_param}
++   Vj=0.75
++   Ibv=1m
++   Ibvl=1m
++   Nbvl=0.15
++ )
+
+* ═══════════════════════════════════════════════════════════════════
+* TESTBENCH 1: I-V Characterization (Static)
+* Sweep Vds from 0 to 6V at multiple Vg1 values
+* ═══════════════════════════════════════════════════════════════════
+
+.param Vg1_val = 0.3
+.param bv_param = {3.5 - 1.5 * Vg1_val}
+
+* NMOS transistor (body floating)
+M1 drain gate source body nsram_nmos W=10u L=0.25u
+
+* Parasitic NPN (explicit, since compact models may not include it)
+Q1 drain body source nsram_npn area=1
+
+* Body capacitance (P-well junction + intentional)
+C_body body 0 1p IC=0
+
+* Body leakage to DNW (reverse-biased P-well/DNW junction)
+* In bulk CMOS, this is the main charge loss mechanism
+D_leak body dnw nsram_leak
+.model nsram_leak D(Is=1e-14 Rs=100k)
+
+* Weak body resistance (neuron mode = 10k, synapse mode = 1M)
+R_body body 0 100k
+
+* DNW bias (positive to reverse-bias P-well/DNW junction)
+V_dnw dnw 0 3.3
+
+* Stimulus
+V_gate gate 0 {Vg1_val}
+V_drain drain 0 DC 0
+V_source source 0 0
+
+* DC sweep: Vds from 0 to 6V
+.dc V_drain 0 6 0.01
+
+* Measure at multiple Vg1
+.control
+  let vg_values = ( 0.0 0.1 0.2 0.3 0.4 0.5 0.6 0.7 )
+  foreach vg_val $&vg_values
+    alter @V_gate[dc] = $vg_val
+    * Update BV parameter (BVpar = 3.5 - 1.5*Vg1)
+    dc V_drain 0 6 0.01
+  end
+  plot dc1.drain#branch dc2.drain#branch dc3.drain#branch dc4.drain#branch
+  + dc5.drain#branch dc6.drain#branch dc7.drain#branch dc8.drain#branch
+  + title "NS-RAM Cell A: I-V Family (Vg1 = 0.0 to 0.7V)"
+  + xlabel "Vds (V)" ylabel "Ids (A)"
+.endc
+
+.end
+
+
+* ═══════════════════════════════════════════════════════════════════
+* TESTBENCH 2: Spiking Neuron (Transient)
+* Apply constant Vds above BVpar, observe body oscillation
+* ═══════════════════════════════════════════════════════════════════
+
+* (Use separate file or uncomment below, comment out TB1)
+*
+* .param Vg1_val = 0.3
+* .param Vds_val = 4.0
+*
+* V_gate gate 0 0.3
+* V_drain drain 0 4.0
+* V_source source 0 0
+*
+* .tran 10n 200u UIC
+*
+* .control
+*   run
+*   plot v(body) title "Body Potential (Membrane Voltage)"
+*   plot -i(V_drain) title "Drain Current (Spike Train)"
+*   * Measure spike frequency
+*   meas tran t1 when v(body)=0.3 rise=1
+*   meas tran t2 when v(body)=0.3 rise=2
+*   let freq = 1/(t2-t1)
+*   echo "Spike frequency:" $&freq "Hz"
+* .endc

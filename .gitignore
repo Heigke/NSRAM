@@ -1,0 +1,45 @@
+__pycache__/
+*.pyc
+*.pyo
+*.egg-info/
+dist/
+build/
+*.egg
+.eggs/
+
+# Data files (large)
+data/MNIST/
+data/*.gz
+data/*.ubyte
+
+# Results (generated)
+results/*.mp4
+results/*.png
+results/*.json
+
+# Environment
+.env
+venv/
+.venv/
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Chip design outputs
+chip/spice/*.raw
+chip/spice/*.log
+
+# FPGA build artifacts
+fpga/output/
+fpga/xsim.dir/
+fpga/.Xil/
+fpga/*.pb
+fpga/*.jou
+fpga/*.log
