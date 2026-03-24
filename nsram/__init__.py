@@ -19,7 +19,7 @@ Three fidelity levels:
 Backends: NumPy (CPU), PyTorch (NVIDIA CUDA / AMD ROCm / Apple MPS)
 """
 
-__version__ = "0.5.0"
+__version__ = "0.5.1"
 
 # Core
 from nsram.neuron import NSRAMNeuron
