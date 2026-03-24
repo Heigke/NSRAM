@@ -218,7 +218,7 @@ def main():
 
     # Actions: MOVE_LEFT, MOVE_RIGHT, ATTACK
     actions = [[True, False, False], [False, True, False], [False, False, True]]
-    action_names = ['◀ STRAFE LEFT', '▶ STRAFE RIGHT', '🔫 SHOOT']
+    action_names = ['<< STRAFE LEFT', '>> STRAFE RIGHT', '** SHOOT **']
 
     print(f"\n{'='*65}")
     print(f"  NS-RAM Temporal Predator Tracking — {N:,} Neurons")
@@ -291,45 +291,52 @@ def main():
             print(f"  Ep {ep:3d}: reward={ep_reward:6.1f} kills={kills} "
                   f"steps={step_count:3d} explore={reservoir.explore_std:.2f}{marker}")
 
-    # ── Final showcase ──
+    # ── Record 12 showcase episodes for a long video ──
     reservoir.W_out = best_W.clone()
-    reservoir.explore_std = 0.03
-    print(f"\n  Final showcase (best_avg_reward={best_avg:.1f})...")
+    reservoir.explore_std = 0.05
+    print(f"\n  Recording 12 showcase episodes (best_avg={best_avg:.1f})...")
 
-    game = create_game(hires=True)
-    game.new_episode()
-    reservoir.reset()
-    retina.reset()
     frames = []
     final_reward = 0
     final_kills = 0
 
-    while not game.is_episode_finished():
-        state = game.get_state()
-        if state is None:
-            break
-        features = retina.process(state.screen_buffer)
-        action_idx, n_spk, logits = reservoir.step(features)
-        r = game.make_action(actions[action_idx], 2)
-        final_reward += r
-        if r > 50:
-            final_kills += 1
+    for ep_show in range(12):
+        game = create_game(hires=True)
+        game.new_episode()
+        reservoir.reset()
+        retina.reset()
+        ep_r = 0
 
-        if state is not None:
-            frames.append({
-                'frame': state.screen_buffer.copy(),
-                'features': features.copy(),
-                'action': action_names[action_idx],
-                'reward': final_reward,
-                'kills': final_kills,
-                'step': len(frames),
-                'logits': logits.copy(),
-                'grid': reservoir.get_activity_grid(50),
-                'n_spk': n_spk,
-            })
+        while not game.is_episode_finished():
+            state = game.get_state()
+            if state is None:
+                break
+            features = retina.process(state.screen_buffer)
+            action_idx, n_spk, logits = reservoir.step(features)
+            r = game.make_action(actions[action_idx], 2)
+            ep_r += r
+            final_reward += r
+            if r > 50:
+                final_kills += 1
 
-    print(f"  Final: reward={final_reward:.1f}, kills={final_kills}, {len(frames)} frames")
-    game.close()
+            if state is not None:
+                frames.append({
+                    'frame': state.screen_buffer.copy(),
+                    'features': features.copy(),
+                    'action': action_names[action_idx],
+                    'reward': final_reward,
+                    'kills': final_kills,
+                    'step': len(frames),
+                    'logits': logits.copy(),
+                    'grid': reservoir.get_activity_grid(50),
+                    'n_spk': n_spk,
+                })
+
+        game.close()
+        k = "KILL" if ep_r > 0 else "miss"
+        print(f"    Ep {ep_show}: reward={ep_r:.0f} [{k}] total_frames={len(frames)}")
+
+    print(f"  Total: {final_kills} kills in 12 eps, {len(frames)} frames")
 
     # ── Render Video ──
     if not frames:
@@ -408,7 +415,8 @@ def main():
     ax_rew.set_facecolor('#0d1117')
     rew_line, = ax_rew.plot([], [], '-', color='#4CAF50', linewidth=2)
     ax_rew.set_xlim(0, max(len(frames), 10))
-    ax_rew.set_ylim(min(-50, final_reward - 10), max(110, final_reward + 10))
+    all_frame_rewards = [f['reward'] for f in frames]
+    ax_rew.set_ylim(min(all_frame_rewards) - 50, max(all_frame_rewards) + 50)
     ax_rew.set_title('Cumulative Reward', fontsize=10, color='#4CAF50', fontweight='bold')
     ax_rew.tick_params(colors='gray', labelsize=7)
     ax_rew.grid(True, alpha=0.2)
