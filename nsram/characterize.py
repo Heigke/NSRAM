@@ -569,3 +569,341 @@ def energy_comparison_table(params: Optional[DeviceParams] = None) -> Dict:
             'levels': 16,
         },
     }
+
+
+# ═══════════════════════════════════════════════════════════════════
+# VOLTAGE RAMP & SWEEP-RATE DEPENDENT I-V
+# (From Sebastian's transient VD ramp measurements — unpublished)
+# ═══════════════════════════════════════════════════════════════════
+
+def simulate_voltage_ramp(Vds_max: float = 4.0, sweep_rate: float = 1.0,
+                           Vg1: float = 0.3, Rb: float = 1e4, Cb: float = 1e-12,
+                           params: Optional[DeviceParams] = None,
+                           return_sweep: str = 'both') -> Dict:
+    """Simulate I-V under transient voltage ramp (not DC).
+
+    The 2T NS-RAM cell shows hysteresis under voltage ramps because the
+    body charges during the up-sweep and discharges during down-sweep.
+    Sweep rate controls hysteresis width: slower → less hysteresis.
+
+    From Sebastian's unpublished data: thick oxide cell optimized at 0.1 V/s,
+    tested from 0.01 to 10 V/s.
+
+    Args:
+        Vds_max: Maximum drain voltage in ramp
+        sweep_rate: Voltage sweep rate (V/s). Range: 0.01 to 10
+        Vg1: Gate voltage
+        Rb: Body resistance
+        Cb: Body capacitance
+        return_sweep: 'up', 'down', or 'both'
+
+    Returns:
+        dict: 'Vds_up', 'Id_up', 'Vds_down', 'Id_down', 'VB_up', 'VB_down',
+              'hysteresis_area', 'sweep_rate'
+    """
+    p = params or DeviceParams()
+    ramp_time = Vds_max / sweep_rate
+    dt = min(1e-3, ramp_time / 2000)  # At least 2000 points per sweep
+    n_up = int(ramp_time / dt)
+    n_down = n_up
+
+    # Up sweep
+    Vds_up = np.linspace(0, Vds_max, n_up)
+    Id_up = np.zeros(n_up)
+    VB_up = np.zeros(n_up)
+    vb = 0.0
+
+    for i in range(n_up):
+        I_aval = float(avalanche_current(Vds_up[i], Vg1, 300, p.Is))
+        if vb > 0:
+            I_aval *= (1 + 5 * vb)
+        I_Rb = vb / Rb
+        Vt = thermal_voltage(300)
+        I_bsj = 1e-12 * (np.exp(min(vb / Vt, 30)) - 1) if vb > 0 else 0
+        dvb = (I_aval - I_bsj - I_Rb) / Cb
+        vb += dvb * dt
+        vb = np.clip(vb, -0.5, 2.0)
+        VB_up[i] = vb
+        Id_up[i] = I_aval + I_bsj
+
+    # Down sweep (body has accumulated charge)
+    Vds_down = np.linspace(Vds_max, 0, n_down)
+    Id_down = np.zeros(n_down)
+    VB_down = np.zeros(n_down)
+
+    for i in range(n_down):
+        I_aval = float(avalanche_current(Vds_down[i], Vg1, 300, p.Is))
+        if vb > 0:
+            I_aval *= (1 + 5 * vb)
+        I_Rb = vb / Rb
+        Vt = thermal_voltage(300)
+        I_bsj = 1e-12 * (np.exp(min(vb / Vt, 30)) - 1) if vb > 0 else 0
+        dvb = (I_aval - I_bsj - I_Rb) / Cb
+        vb += dvb * dt
+        vb = np.clip(vb, -0.5, 2.0)
+        VB_down[i] = vb
+        Id_down[i] = I_aval + I_bsj
+
+    # Hysteresis area (enclosed loop)
+    # Interpolate to common Vds grid
+    Vds_common = np.linspace(0, Vds_max, 500)
+    Id_up_interp = np.interp(Vds_common, Vds_up, Id_up)
+    Id_down_interp = np.interp(Vds_common, Vds_down[::-1], Id_down[::-1])
+    hyst_area = float(np.trapz(np.abs(Id_up_interp - Id_down_interp), Vds_common))
+
+    return {
+        'Vds_up': Vds_up, 'Id_up': Id_up, 'VB_up': VB_up,
+        'Vds_down': Vds_down, 'Id_down': Id_down, 'VB_down': VB_down,
+        'hysteresis_area': hyst_area,
+        'sweep_rate': sweep_rate,
+    }
+
+
+def sweep_rate_dependence(sweep_rates=None, Vds_max: float = 4.0,
+                           Vg1: float = 0.3, **kwargs) -> Dict:
+    """Characterize I-V hysteresis vs sweep rate.
+
+    From Sebastian's thick oxide cell data: optimized at 0.1 V/s.
+    Slower sweeps → body reaches steady state → less hysteresis.
+    Faster sweeps → transient body charging → more hysteresis.
+
+    Args:
+        sweep_rates: Array of sweep rates (V/s). Default: [0.01, 0.1, 1, 10]
+
+    Returns:
+        dict: 'sweep_rates', 'hysteresis_areas', 'ramp_results'
+    """
+    if sweep_rates is None:
+        sweep_rates = [0.01, 0.1, 1.0, 10.0]
+
+    areas = []
+    results = []
+    for sr in sweep_rates:
+        r = simulate_voltage_ramp(Vds_max=Vds_max, sweep_rate=sr, Vg1=Vg1, **kwargs)
+        areas.append(r['hysteresis_area'])
+        results.append(r)
+
+    return {
+        'sweep_rates': np.array(sweep_rates),
+        'hysteresis_areas': np.array(areas),
+        'ramp_results': results,
+    }
+
+
+# ═══════════════════════════════════════════════════════════════════
+# POLYNOMIAL BULK CURRENT MODEL
+# (From Sebastian's semi-empirical fits — unpublished)
+# ═══════════════════════════════════════════════════════════════════
+
+def bulk_current_polynomial(Vds, Vg1, a=None, b=None):
+    """Semi-empirical polynomial bulk current model.
+
+    From Sebastian's unpublished fit: I_bulk = a(Vg1) × Vds + b(Vg1) × Vds²
+    This is an alternative to the Chynoweth exponential model — simpler,
+    faster, and sometimes more accurate in the linear regime.
+
+    Args:
+        Vds: Drain-source voltage (scalar or array)
+        Vg1: Gate voltage
+        a: Linear coefficient (auto-estimated from Vg1 if None)
+        b: Quadratic coefficient (auto-estimated from Vg1 if None)
+
+    Returns:
+        I_bulk: Bulk current (same shape as Vds)
+    """
+    Vds = np.asarray(Vds, dtype=np.float64)
+
+    # Default: empirical relationship from Vg1 (from Sebastian's fits)
+    if a is None:
+        a = 1e-12 * np.exp(3.0 * Vg1)  # Increases with Vg1
+    if b is None:
+        b = 5e-13 * np.exp(4.0 * Vg1)  # Stronger Vg1 dependence
+
+    I = a * Vds + b * Vds**2
+    return np.clip(I, 0, 1e-3)
+
+
+def fit_bulk_polynomial(Vds, Id, Vg1: float = 0.3) -> Dict:
+    """Fit polynomial bulk current model to measured data.
+
+    Args:
+        Vds: (N,) measured voltage points
+        Id: (N,) measured drain current
+        Vg1: Gate voltage at measurement
+
+    Returns:
+        dict: 'a', 'b', 'r_squared', 'model_type'
+    """
+    Vds = np.asarray(Vds, dtype=np.float64)
+    Id = np.asarray(Id, dtype=np.float64)
+    mask = (Vds > 0) & (Id > 0)
+    V, I = Vds[mask], Id[mask]
+
+    if len(V) < 3:
+        return {'a': 0, 'b': 0, 'r_squared': 0, 'error': 'too few points'}
+
+    # Fit I = a*V + b*V²
+    A = np.column_stack([V, V**2])
+    coeffs, _, _, _ = np.linalg.lstsq(A, I, rcond=None)
+    a, b = coeffs
+
+    pred = a * V + b * V**2
+    ss_res = np.sum((I - pred)**2)
+    ss_tot = np.sum((I - I.mean())**2)
+    r2 = 1 - ss_res / ss_tot if ss_tot > 0 else 0
+
+    return {'a': float(a), 'b': float(b), 'r_squared': float(r2),
+            'Vg1': Vg1, 'model_type': 'polynomial'}
+
+
+# ═══════════════════════════════════════════════════════════════════
+# DEEP N-WELL HIGH-VOLTAGE REGIME
+# (From Sebastian's 130nm triple-well measurements — unpublished)
+# ═══════════════════════════════════════════════════════════════════
+
+def deep_nwell_iv(Vds_range=(0, 12), Vg_values=None,
+                   BV0: float = 10.5, k_vg: float = 0.5,
+                   params: Optional[DeviceParams] = None) -> Dict:
+    """I-V curves for deep N-well NFET floating body cell.
+
+    The deep N-well 1T cell operates at MUCH higher voltages than the
+    standard cell (7-10V+ vs 2-4V). This is because the deep N-well
+    provides better body isolation → higher BVpar.
+
+    From Sebastian's unpublished data: firing between 7V and 10V+,
+    Vg controls onset.
+
+    Args:
+        Vds_range: Drain voltage sweep range (0 to 12V typical)
+        Vg_values: Gate voltages to sweep (default: 7-10V)
+        BV0: Breakdown voltage at Vg=0 for deep N-well (much higher than standard)
+        k_vg: BVpar sensitivity to Vg
+
+    Returns:
+        dict: 'Vds', 'Id_family' (dict of Vg→Id), 'BVpar_vs_Vg'
+    """
+    p = params or DeviceParams()
+    if Vg_values is None:
+        Vg_values = [7.0, 7.5, 8.0, 8.5, 9.0, 9.5, 10.0]
+
+    Vds = np.linspace(*Vds_range, 500)
+    Id_family = {}
+    BVpar_vs_Vg = {}
+
+    for Vg in Vg_values:
+        BVpar = BV0 - k_vg * Vg
+        BVpar_vs_Vg[Vg] = BVpar
+
+        Vt = thermal_voltage(300)
+        Ne = p.Ne
+        Is = p.Is
+
+        # Avalanche current with deep N-well parameters
+        exponent = np.clip((Vds - BVpar) / (Ne * Vt), -30, 30)
+        Id = Is * np.exp(exponent)
+        Id = np.clip(Id, 0, 1e-3)
+        Id_family[Vg] = Id
+
+    return {
+        'Vds': Vds,
+        'Id_family': Id_family,
+        'BVpar_vs_Vg': BVpar_vs_Vg,
+        'Vg_values': Vg_values,
+        'BV0': BV0,
+        'k_vg': k_vg,
+    }
+
+
+# ═══════════════════════════════════════════════════════════════════
+# EXCITATORY / INHIBITORY INPUT CIRCUIT MODEL
+# (From Sebastian's NSRAM building blocks — unpublished)
+# ═══════════════════════════════════════════════════════════════════
+
+def ei_input_neuron(I_exc, I_inh, Vg1: float = 0.3,
+                     g_exc: float = 1.0, g_inh: float = 1.0,
+                     params: Optional[DeviceParams] = None) -> Dict:
+    """NS-RAM neuron with excitatory and inhibitory current inputs.
+
+    From Sebastian's circuit: excitatory and inhibitory inputs via
+    current mirrors, without diode (soma-only configuration).
+    The balance of E/I determines firing rate.
+
+    Args:
+        I_exc: (T,) excitatory input current time series
+        I_inh: (T,) inhibitory input current time series
+        Vg1: Gate bias
+        g_exc: Excitatory gain
+        g_inh: Inhibitory gain
+
+    Returns:
+        dict: 't', 'Vm', 'spikes', 'firing_rate', 'ei_balance'
+    """
+    from nsram.neuron import NSRAMNeuron
+
+    I_exc = np.asarray(I_exc, dtype=np.float64)
+    I_inh = np.asarray(I_inh, dtype=np.float64)
+    T = len(I_exc)
+
+    # Net current: E - I
+    I_net = g_exc * I_exc - g_inh * I_inh
+
+    neuron = NSRAMNeuron(Vg1=Vg1, device=params)
+    result = neuron.simulate(
+        duration=T * 1e-6,  # Assume 1µs per sample
+        dt=1e-7,
+        I_ext_fn=lambda t, _I=I_net: float(_I[min(int(t * 1e6), T-1)]),
+    )
+
+    return {
+        't': result['t'],
+        'Vm': result['Vm'],
+        'spikes': result['spikes'],
+        'n_spikes': result['n_spikes'],
+        'firing_rate': result['n_spikes'] / (T * 1e-6),
+        'ei_balance': float(np.mean(I_exc) / (np.mean(I_inh) + 1e-15)),
+    }
+
+
+# ═══════════════════════════════════════════════════════════════════
+# FREQUENCY-CODED INPUT (MNIST APPLICATION)
+# (From Sebastian's integrator-reset frequency coding — unpublished)
+# ═══════════════════════════════════════════════════════════════════
+
+def frequency_encode_image(image, n_steps: int = 100,
+                            f_max: float = 200e3, f_min: float = 1e3):
+    """Encode image pixels as spike frequencies (NS-RAM native encoding).
+
+    From Sebastian's unpublished work: "Integrator reset example for
+    frequency coded input of MNIST". Each pixel intensity maps to a
+    firing frequency. The NS-RAM neuron's natural frequency tunability
+    (4 decades: 20 Hz to 200 kHz) is used directly.
+
+    This is more biologically realistic than rate coding because it
+    preserves precise spike timing within each coding interval.
+
+    Args:
+        image: (H, W) or (N,) pixel values in [0, 1]
+        n_steps: Number of time steps
+        f_max: Maximum frequency (bright pixel)
+        f_min: Minimum frequency (dark pixel)
+
+    Returns:
+        spikes: (n_steps, N) binary spike train
+    """
+    image = np.asarray(image, dtype=np.float32).ravel()
+    N = len(image)
+
+    # Map pixel intensity to inter-spike interval
+    freqs = f_min + image * (f_max - f_min)
+    periods = 1.0 / (freqs + 1e-10)  # In time steps
+
+    spikes = np.zeros((n_steps, N), dtype=np.float32)
+    phase = np.random.uniform(0, 1, N)  # Random initial phase
+
+    for t in range(n_steps):
+        phase += 1.0 / (periods * n_steps + 1e-10)
+        fired = phase >= 1.0
+        spikes[t, fired] = 1.0
+        phase[fired] -= 1.0
+
+    return spikes

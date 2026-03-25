@@ -19,7 +19,7 @@ Three fidelity levels:
 Backends: NumPy (CPU), PyTorch (NVIDIA CUDA / AMD ROCm / Apple MPS)
 """
 
-__version__ = "0.8.0"
+__version__ = "0.9.0"
 
 # Core
 from nsram.neuron import NSRAMNeuron
@@ -67,6 +67,10 @@ from nsram.characterize import (
     simulate_ltp_ltd, paired_pulse_ratio,
     simulate_retention, simulate_endurance,
     energy_per_spike, energy_comparison_table,
+    simulate_voltage_ramp, sweep_rate_dependence,
+    bulk_current_polynomial, fit_bulk_polynomial,
+    deep_nwell_iv, ei_input_neuron,
+    frequency_encode_image,
 )
 
 # Fitting & Comparison
