@@ -1,0 +1,22 @@
+Hi Sebas, great to hear from you — doing much better, thanks.
+
+Really glad you had a look. Since you last checked it's grown quite a bit, so here's a quick rundown of what's in there now (v0.9.0, pip install nsram):
+
+Device physics layer — the full body-charge ODE, Chynoweth avalanche model, SRH charge trapping, and temperature-dependent BVpar, all matched to your Zenodo SPICE parameters. Single-cell simulation with scipy for validation against TCAD/SPICE.
+
+Characterization tools — this is the part I think you'll find most useful when the new parameters come in. There's automated I-V curve fitting (drop in a CSV, it extracts BV0, Is, Ne), transient pulse response simulation with tau extraction, LTP/LTD cycle simulation (currently gets 7 distinct conductance levels), and Arrhenius retention modelling (gives tau=10,139s at 300K which lines up with your >10⁴s figure, and the extracted Ea is self-consistent).
+
+I've also been thinking ahead about what the library should support beyond the paper — things like deep N-well high-voltage operation, sweep-rate dependent I-V hysteresis, polynomial bulk current models as an alternative to the exponential fit, E/I input neuron configurations, and frequency-coded spike encoding for image classification. These are all stubbed out with placeholder parameters, so if any of them are relevant to where your work is heading, the framework is ready.
+
+Monte Carlo variability — parameterised die-to-die variation for array yield estimation. Should be useful if you're thinking about scaling to crossbar arrays.
+
+Network-level reservoir computing — GPU-accelerated (CUDA/ROCm), 5 neuron models for comparison (your NS-RAM AdEx-LIF, plus Izhikevich, Hodgkin-Huxley, parametric LIF, and a standard ESN baseline). NS-RAM outperforms all of them: 97% temporal XOR, 99.6% Mackey-Glass chaotic prediction, 96.75% MNIST.
+
+Technology comparison — NS-RAM benchmarked against RRAM, PCM, MRAM, hBN memristors, and CMOS neurons on area/energy/endurance.
+
+Everything is open-source at github.com/Heigke/NSRAM. When you send the updated parameters I can plug them straight into the DeviceParams dataclass and re-run all the validation — the fitting pipeline is designed for exactly that workflow.
+
+Looking forward to it. No rush at all on your end.
+
+Best,
+Eric
