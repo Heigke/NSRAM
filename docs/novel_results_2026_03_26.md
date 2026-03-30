@@ -261,8 +261,33 @@ The lesson: soft MoE routing and per-sample DFA are incompatible. The router mus
 
 **Most promising next step**: Progressive expert expansion — train Expert 1 on Task 1 with
 full DFA (proven 93%), freeze it (consolidate to oxide), then train Expert 2 on Task 2.
-Router is a simple task-ID switch, not a learned gate. This is PackNet/ProgressiveNets
-with NS-RAM physics, guaranteed to work because each expert uses proven DFA.
+
+## 16. General Online Learning Comparison (GPU, no hardware constraints)
+
+| Method | MNIST_p1 | MNIST_p2 | Forgetting | FMNIST | Joint |
+|--------|----------|----------|-----------|--------|-------|
+| **EWC (λ=5000)** | **95.9%** | **95.8%** | **0.1pp** | **83.3%** | **89.5%** |
+| Progressive | 95.9% | 27.0% | 68.9pp | 84.6% | 55.8% |
+| Finetune | 95.9% | 27.0% | 68.9pp | 84.6% | 55.8% |
+| DFA | 74.8% | 42.5% | 32.3pp | 67.9% | 55.2% |
+
+**EWC dominates**: 0.1pp forgetting with 89.5% joint accuracy. Fisher information
+perfectly identifies which weights to protect.
+
+**Key insight for NS-RAM**: EWC's Fisher information maps naturally to oxide trapping:
+- High Fisher (important weight) → high VG2 → strong trapping → protected in oxide
+- Low Fisher (unimportant weight) → low VG2 → body potential only → free to update
+- This is the PHYSICAL implementation of EWC, not an algorithmic approximation
+
+**Novel research direction**: Fisher-Informed Oxide Trapping (FIOT)
+1. Train Task 1 with DFA (proven 93%)
+2. Compute Fisher info per weight (spike sensitivity)
+3. Trap high-Fisher weights in oxide (14-level, non-volatile)
+4. Train Task 2 — updates go to body potential, oxide weights protected by Ea barrier
+5. This is EWC IMPLEMENTED IN PHYSICS, not as a regularization term
+
+**DFA shows less forgetting than backprop** (32pp vs 69pp) — random feedback naturally
+limits update blast radius. This is an underappreciated property of DFA for continual learning.
 
 **Potential paper title:**
 "On-Chip Learning with 14-Level NS-RAM Synaptic Weights: Forward-Forward and Direct Feedback
