@@ -90,11 +90,31 @@ Map each SOLE component to NS-RAM physics:
 4. What is the compute overhead of SVD projection per step?
 5. Does the combination outperform any individual component?
 
-## Success Metrics
+## Experimental Results (2026-03-26)
 
-| Metric | Finetune | EWC | Target (SOLE) |
-|--------|----------|-----|---------------|
-| MNIST→FMNIST forgetting | 69pp | 0.1pp | <1pp |
-| MNIST→FMNIST→KMNIST joint | ~40% | ~85% | >88% |
-| Compute overhead vs finetune | 1x | 1.5x | <3x |
-| Memory overhead | 1x | 2x | <4x |
+### Small scale: MNIST → FMNIST → PermMNIST (3 tasks)
+| Method | Joint | MNIST retain | Forgetting |
+|--------|-------|-------------|-----------|
+| **EWC** | **89.0%** | **93.4%** | **0.3pp** |
+| Finetune | 52.5% | 16.9% | 77.8pp |
+| SOLE | 41.5% | 12.8% | 51.9pp (surprise gating too aggressive) |
+
+### Scaled: Split-CIFAR-100 (20 tasks, CNN)
+| Method | Final avg | Task 0 retain | Last task |
+|--------|----------|--------------|-----------|
+| Finetune | 21.7% | 16.0% | **75.6%** |
+| **EWC** | **22.3%** | **48.6%** | 7.8% |
+| HRM-EWC | 20.3% | 14.6% | 49.0% |
+
+**Critical finding**: EWC collapses at 20 tasks — Fisher penalties accumulate
+and freeze the network (7.8% on last task). It works for 2-3 tasks but not 20.
+All methods converge to ~21% average. The stability-plasticity tradeoff is REAL
+and UNSOLVED at this scale.
+
+**What this means**: The field's pursuit of MoE+LoRA (D-MoLE: -1.49% BWT),
+Adaptive SVD (71.3% on 15-task), and HRM-style multi-timescale is justified.
+Single-network regularization (EWC) is not the answer for many-task sequences.
+
+### Papers reviewed
+- **HRM (arxiv 2506.21734)**: Multi-timescale recurrence, O(1) training, maps to NS-RAM. RELEVANT.
+- **Engram (arxiv 2601.07372)**: Static knowledge in hash tables. Moderate relevance for separating memory from compute.

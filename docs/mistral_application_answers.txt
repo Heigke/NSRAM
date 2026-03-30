@@ -1,0 +1,46 @@
+MISTRAL AI — AI Scientist Application
+======================================
+
+Full name: Eric Bergvall
+Email: eric@theaiframework.com
+Phone: +46 70 499 0616
+Current location: Stockholm, Sweden
+Current company: Advania / The AI Framework
+
+LinkedIn: https://www.linkedin.com/in/ericbergvall/
+GitHub: https://github.com/Heigke
+Google Scholar: [if you have one, add it]
+
+--------------------------------------
+QUESTIONS
+--------------------------------------
+
+Q: What did you work on in the last two years that makes you proud?
+
+I created nsram (pip install nsram) — the first open-source simulator for the NS-RAM neuromorphic device published in Nature (Pazos et al., 2025). What started as curiosity about a paper became an active collaboration with the original authors at NUS. The library now has 16 modules covering device physics through reservoir computing, and I demonstrated Forward-Forward learning at 14-level weight quantization with zero accuracy loss — something nobody had published before. I also investigated continual learning by mapping Elastic Weight Consolidation to actual device physics (oxide charge trapping), reducing catastrophic forgetting from 69 percentage points to 22. None of this was my job — it was pure research drive, built evenings and weekends with Claude Code as a co-engineering partner.
+
+---
+
+Q: What do you optimize for in life?
+
+Understanding. I survived a brain tumour at 20, and since then I have been driven by the question of how information processing systems work — biological, silicon, or otherwise. I optimise for depth over breadth: I would rather understand one thing properly than skim ten. In practice this means I go from the physics up — I don't just use PyTorch, I probe the GPU at ISA level to see what the shader registers actually do. This sometimes makes me slow to start but hard to stop.
+
+---
+
+Q: How intensely do you like working?
+
+I built a 16-module Python library, an FPGA neuromorphic system, a Zenodo preprint, and ran 67+ experiment groups — in parallel with a full-time job. When I find a problem that matters, I do not have an off switch. I have spent entire weekends in conversation with Claude Code running experiments on my AMD GPU while my laptop thermal-throttles at 99°C. That said, I have learned (the hard way, via a brain tumour) that intensity needs to be sustainable. I work hard because I care, not because someone is watching.
+
+---
+
+Q: What should we know about you?
+
+I am not a conventional ML researcher. I have no PhD. My background is engineering physics + defence systems architecture (Saab, 4 years). What I do have is a demonstrated ability to go from "interesting paper" to "working system with published code" faster than most people with more credentials. I think across abstraction levels — I can discuss transformer attention mechanisms and Verilog RTL clock domains in the same conversation. I use AI tools (Claude Code) as a genuine research partner, not just an autocomplete — the nsram library and all experiments were co-developed this way, which I believe is how research will be done going forward. I am based in Stockholm but open to relocating to Paris.
+
+--------------------------------------
+ADDITIONAL INFORMATION
+--------------------------------------
+
+GitHub: github.com/Heigke/NSRAM — the nsram library (16 modules, PyPI)
+Preprint: doi.org/10.5281/zenodo.19029261 — FEEL: GPU-FPGA substrate coupling
+Key results: 94% MNIST at 14-level quantization (zero loss), 99.6% Mackey-Glass, Fisher-informed continual learning reducing forgetting by 3x.
