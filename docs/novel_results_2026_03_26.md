@@ -253,8 +253,16 @@ BUT single-task accuracy is weak (19.9% vs 44.9%) — the routing overhead costs
 
 **Honest assessment**: The forgetting reduction is real but the accuracy gap is too large
 for PIMOL to be competitive yet. The architecture works in principle (less forgetting proves
-the mechanism) but needs a stronger per-expert learning rule. Combining DFA (proven 93%)
-with PIMOL's modularity + consolidation is the next step.
+the mechanism) but needs a stronger per-expert learning rule.
+
+**v3 attempted**: stronger DFA + batch routing → collapsed to 8% (routing dilutes gradients).
+The lesson: soft MoE routing and per-sample DFA are incompatible. The router must be simpler
+(hard assignment) or the experts must be stronger (pre-trained then frozen).
+
+**Most promising next step**: Progressive expert expansion — train Expert 1 on Task 1 with
+full DFA (proven 93%), freeze it (consolidate to oxide), then train Expert 2 on Task 2.
+Router is a simple task-ID switch, not a learned gate. This is PackNet/ProgressiveNets
+with NS-RAM physics, guaranteed to work because each expert uses proven DFA.
 
 **Potential paper title:**
 "On-Chip Learning with 14-Level NS-RAM Synaptic Weights: Forward-Forward and Direct Feedback
