@@ -19,7 +19,7 @@ Three fidelity levels:
 Backends: NumPy (CPU), PyTorch (NVIDIA CUDA / AMD ROCm / Apple MPS)
 """
 
-__version__ = "0.9.0"
+__version__ = "0.10.0"
 
 # Core
 from nsram.neuron import NSRAMNeuron
@@ -79,6 +79,9 @@ from nsram.fitting import (
     monte_carlo, technology_comparison, compare_model_experiment,
     TECH_COMPARISON,
 )
+
+# BEAM — Byte-level Embodied Associative Memory
+from nsram.beam import BEAMModel
 
 # Physics
 from nsram.physics import (
