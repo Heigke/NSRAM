@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "nsram"
-version = "0.11.0"
+version = "0.11.1"
 description = "NS-RAM: Neuro-Synaptic RAM simulator — floating-body transistor neuron/synapse modeling with charge-trapping plasticity. BSIM4-native 2T floating-body model (impact ionization + body bias) alongside the legacy Zenodo avalanche model. 16 modules incl. BEAM (byte-level associative memory mapped to crossbar). 5 neuron models, 10 RC benchmarks, online learning. 97% XOR, 96.75% MNIST."
 readme = "README.md"
 license = {text = "Apache-2.0"}

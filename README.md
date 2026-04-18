@@ -8,6 +8,10 @@ The first open-source Python library for simulating NS-RAM floating-body transis
 
 Based on: Pazos et al., *"Synaptic and neural behaviours in a standard silicon transistor"*, Nature 640, 69-76 (2025).
 
+### New in v0.11 — BSIM4-native 2T floating-body model
+
+The firing mechanism can now be driven directly from **BSIM4 impact ionization** (§6.1, `ALPHA0` / `BETA0`) and **body-bias** `Vth(Vbs)` (§2.2, `K1` / `K2`), with no breakdown-voltage (`BVpar`) control parameter. Drop in measured I-V curves, extract `ALPHA0` / `BETA0`, and the 2T spiking dynamics follow. See the *BSIM4-Native 2T Model* section below. The legacy Chynoweth / `BVpar` path is unchanged.
+
 ## Installation
 
 ```bash
@@ -50,10 +54,11 @@ NS-RAM (Neuro-Synaptic Random Access Memory) is a standard CMOS floating-body tr
 - Temperature dependence: `BVpar(T) = BVpar × (1 - 21.3μ × ΔT)`
 - SRH charge trapping: `dQ/dt = k_cap(Vg2) × (1-Q) × rate - k_em × Q`
 - VG2-controlled mode switching (neuron ↔ synapse)
+- **BSIM4-native mode (v0.11+):** impact ionization `Iii ∝ (Vds−Vdseff)·exp(−BETA0/(Vds−Vdseff))·Ids` (§6.1) and `Vth(Vbs) = VTH0 + K1·(√(Φs−Vbs) − √Φs) − K2·Vbs` (§2.2), with no `BVpar` control parameter
 
-## Library Overview (v0.5.0)
+## Library Overview (v0.11.0)
 
-**14 modules, 4,034 lines, 81 public exports.**
+**16 modules, 4.4K+ lines, 100+ public exports.**
 
 ### Core Simulation
 
@@ -192,6 +197,54 @@ This library implements the analytical mapping between NS-RAM charge trapping an
 
 VG2 voltage controls the STP type: low VG2 → depression, high VG2 → facilitation.
 
+## BSIM4-Native 2T Model (v0.11+)
+
+An alternative path that drops the Zenodo avalanche-diode subcircuit and builds the floating-body dynamics directly on **BSIM4.3.0** equations: impact ionization (§6.1), `Vth(Vbs)` body effect (§2.2), optional GIDL/GISL (§6.2), and source/drain-body junction diodes (§10.1). The body charge balance
+
+```
+Cb · dVB/dt = Iii(Vds, Vgs, Vbs) + IGIDL − Ibs(Vbs) − Ibd(Vbd) − VB/Rb
+```
+
+is integrated externally — BSIM4 has no native floating-body mode (that's BSIMSOI), so `TwoTransistorCell` wraps the BSIM4 current sources with a Cb / Rb integrator and Vg2→Rb mode switch.
+
+```python
+from nsram import (
+    BSIM4Params, BSIM4_PRESETS,
+    TwoTransistorCell, impact_ionization_bsim4,
+    fit_bsim4_impact,
+)
+
+# 1. Simulate a 2T cell — no BVpar, firing emerges from Iii + Vth(Vbs)
+cell = TwoTransistorCell(bsim=BSIM4_PRESETS["ns_ram_180nm"])
+res = cell.simulate(Vg1=0.9, Vg2=0.2, Vds=3.8, t_end=20e-6, dt=1e-8)
+print(f"spikes: {len(res['spikes'])}, peak Iii: {res['Iii'].max():.2e} A")
+
+# 2. Extract ALPHA0 / BETA0 from a measured I-V sweep
+fit = fit_bsim4_impact(Vds_array, Isub_array, Vgs=1.0, Vbs=0.0)
+# → fit['params'] is a BSIM4Params ready to drop into TwoTransistorCell
+```
+
+Presets: `ns_ram_180nm` (default), `ns_ram_180nm_hot`, `generic_65nm`. Override any BSIM4 parameter in `BSIM4Params(ALPHA0=..., BETA0=..., K1=..., ...)`.
+
+### BSIM4 parameters (selected — full set in `nsram.bsim4.BSIM4Params`)
+
+| Parameter | Default | BSIM4 §   | Role |
+|-----------|---------|-----------|------|
+| `ALPHA0`  | 6e-6    | §6.1 / A.5| first Iii coefficient (A·m/V) |
+| `ALPHA1`  | 0       | §6.1 / A.5| length-scaling Iii coefficient |
+| `BETA0`   | 22      | §6.1 / A.5| Chynoweth exponential coefficient (V) |
+| `VTH0`    | 0.432   | §2.2 / A.3| long-channel Vth at Vbs=0 |
+| `K1`      | 0.55    | §2.2 / A.3| first-order body coefficient (V^½) |
+| `K2`      | 0.03    | §2.2 / A.3| second-order body coefficient |
+| `AGIDL`   | 1e-10   | §6.2 / A.6| GIDL pre-exponential (mho) |
+| `BGIDL`   | 2.3e9   | §6.2 / A.6| GIDL exponential (V/m) |
+| `JSS`/`JSD` | 1e-4  | §10.1 / A.12 | body-diode reverse sat current density (A/m²) |
+| `NJS`/`NJD` | 1.0   | §10.1 / A.12 | body-diode ideality factor |
+| `Cb`      | 1 pF    | external  | floating-body capacitance |
+| `Rb`      | 1 MΩ    | external  | bulk leakage resistance (Vg2-modulated in `TwoTransistorCell`) |
+
+Round-trip fit of synthetic Iii data recovers ALPHA0/BETA0 to <1% (R² ≈ 0.998). Measured I-V CSVs drop straight into `fit_bsim4_impact(Vds, Isub, Vgs)`.
+
 ## Device Parameters
 
 Default parameters from Pazos et al. SPICE model (Zenodo: 13843362):
@@ -219,11 +272,12 @@ Default parameters from Pazos et al. SPICE model (Zenodo: 13843362):
 
 ## Examples
 
-See `examples/` for 17 runnable scripts:
+See `examples/` for runnable scripts:
 
 | Script | Description |
 |--------|-------------|
 | `quickstart.py` | Minimal hello-world |
+| `bsim4_2t_floating_body.py` | **BSIM4-native 2T cell** — Iii sweep, neuron/synapse spiking, ALPHA0/BETA0 fit |
 | `architecture_comparison.py` | 5 neuron models × 10 benchmarks × 3 scales |
 | `mnist_scaling.py` | MNIST accuracy vs neuron count (96.75% at 8K) |
 | `brain_arena.py` | 90K-neuron cortical brain foraging in 2D arena |
