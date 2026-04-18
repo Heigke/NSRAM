@@ -23,6 +23,9 @@ from nsram.physics import (
     DeviceParams, DimensionlessParams, PRESETS,
     breakdown_voltage, avalanche_current, thermal_voltage,
 )
+from nsram.bsim4 import (
+    BSIM4Params, impact_ionization_bsim4, drain_current_bsim,
+)
 
 try:
     import matplotlib
@@ -161,6 +164,159 @@ def fit_iv_family(Vcb_list, Id_list, Vg1_list) -> Dict:
         'per_curve': results,
         'n_curves': len(results),
     }
+
+
+# ═══════════════════════════════════════════════════════════════════
+# BSIM4 IMPACT-IONIZATION FITTING  (Sebastian's 2026 measurement flow)
+# ═══════════════════════════════════════════════════════════════════
+
+def _bsim4_iii_vs_vds(Vds, ALPHA0, BETA0, Vgs, Vbs, base: BSIM4Params):
+    """Iii(Vds) at fixed Vgs, Vbs — target for curve_fit."""
+    p = BSIM4Params(**{**base.__dict__, "ALPHA0": ALPHA0, "BETA0": BETA0})
+    return np.asarray(impact_ionization_bsim4(Vgs, Vds, Vbs, p),
+                      dtype=np.float64)
+
+
+def fit_bsim4_impact(Vds, Isub, Vgs: float, Vbs: float = 0.0,
+                      base: Optional[BSIM4Params] = None,
+                      p0: Optional[Dict] = None) -> Dict:
+    """Fit BSIM4 impact ionization Iii(Vds, Vgs, Vbs).
+
+    Use this when you have a substrate/body-current measurement and
+    want to extract ALPHA0, BETA0 (and optionally re-calibrate the
+    drain-current skeleton through `base`).  Drops BVpar as a free
+    parameter entirely — firing emerges from (ALPHA0, BETA0) plus
+    Vth(Vbs).
+
+    Args:
+        Vds    (N,)  drain-source voltage sweep (V)
+        Isub   (N,)  substrate/body current (A, positive)
+        Vgs    scalar gate voltage at which the sweep was taken (V)
+        Vbs    scalar body-source voltage (V), default 0
+        base   BSIM4Params providing fixed geometry/Vth/mobility.
+               If None, uses the 180 nm preset.
+        p0     optional initial guesses: {'ALPHA0': ..., 'BETA0': ...}
+
+    Returns:
+        dict with fitted ALPHA0, BETA0, r_squared, residual_norm,
+        and a populated BSIM4Params (`params`) you can drop straight
+        into `nsram.bsim4.body_charge_ode_bsim4` or
+        `nsram.bsim4.TwoTransistorCell`.
+    """
+    Vds = np.asarray(Vds, dtype=np.float64)
+    Isub = np.asarray(Isub, dtype=np.float64)
+    base = base or BSIM4Params()
+
+    p0 = p0 or {}
+    A0 = float(p0.get("ALPHA0", base.ALPHA0))
+    B0 = float(p0.get("BETA0", base.BETA0))
+
+    def _model(vds, a0, b0):
+        return _bsim4_iii_vs_vds(vds, a0, b0, Vgs, Vbs, base)
+
+    # Fit in log-space to balance 6–8 decade Iii dynamic range.
+    mask = (Isub > 0) & np.isfinite(Isub) & (Vds > 0)
+    if mask.sum() < 4:
+        return {"error": "insufficient data points above zero", "r_squared": 0.0}
+
+    log_target = np.log(Isub[mask])
+
+    def _log_model(vds, a0, b0):
+        y = _model(vds, a0, b0)
+        return np.log(np.maximum(y, 1e-30))
+
+    try:
+        popt, _ = curve_fit(
+            _log_model, Vds[mask], log_target, p0=[A0, B0],
+            bounds=([1e-9, 1.0], [1e-2, 80.0]),
+            maxfev=8000,
+        )
+        ALPHA0_fit, BETA0_fit = popt
+        pred = _model(Vds[mask], ALPHA0_fit, BETA0_fit)
+        ss_res = float(np.sum((Isub[mask] - pred) ** 2))
+        ss_tot = float(np.sum((Isub[mask] - Isub[mask].mean()) ** 2) + 1e-30)
+        r2 = 1.0 - ss_res / ss_tot
+        fitted = BSIM4Params(**{**base.__dict__,
+                                 "ALPHA0": float(ALPHA0_fit),
+                                 "BETA0": float(BETA0_fit)})
+        return {
+            "ALPHA0": float(ALPHA0_fit),
+            "BETA0": float(BETA0_fit),
+            "r_squared": float(r2),
+            "residual_norm": float(np.sqrt(ss_res)),
+            "n_points": int(mask.sum()),
+            "params": fitted,
+        }
+    except RuntimeError as e:
+        return {"error": str(e), "r_squared": 0.0}
+
+
+def fit_bsim4_family(Vds_list, Isub_list, Vgs_list, Vbs_list=None,
+                      base: Optional[BSIM4Params] = None) -> Dict:
+    """Fit BSIM4 Iii across a family of (Vgs, Vbs) sweeps.
+
+    Joint optimisation: ALPHA0 and BETA0 should be process-global; only
+    the bias condition changes.  We therefore pool all curves and fit
+    one (ALPHA0, BETA0) pair.  Per-curve residuals returned for QC.
+    """
+    base = base or BSIM4Params()
+    Vbs_list = Vbs_list or [0.0] * len(Vgs_list)
+
+    all_Vds, all_Isub, all_Vgs, all_Vbs = [], [], [], []
+    for V, I, g, b in zip(Vds_list, Isub_list, Vgs_list, Vbs_list):
+        V = np.asarray(V); I = np.asarray(I)
+        mask = (I > 0) & np.isfinite(I) & (V > 0)
+        all_Vds.append(V[mask]); all_Isub.append(I[mask])
+        all_Vgs.append(np.full(mask.sum(), float(g)))
+        all_Vbs.append(np.full(mask.sum(), float(b)))
+    Vds = np.concatenate(all_Vds)
+    Isub = np.concatenate(all_Isub)
+    Vgs = np.concatenate(all_Vgs)
+    Vbs = np.concatenate(all_Vbs)
+
+    if len(Vds) < 4:
+        return {"error": "insufficient data", "r_squared": 0.0}
+
+    def _log_model(_x, a0, b0):
+        # _x is ignored; we use the captured Vds / Vgs / Vbs arrays
+        p = BSIM4Params(**{**base.__dict__, "ALPHA0": a0, "BETA0": b0})
+        y = np.array([
+            float(impact_ionization_bsim4(vg, vd, vb, p))
+            for vd, vg, vb in zip(Vds, Vgs, Vbs)
+        ])
+        return np.log(np.maximum(y, 1e-30))
+
+    try:
+        popt, _ = curve_fit(
+            _log_model, Vds, np.log(Isub),
+            p0=[base.ALPHA0, base.BETA0],
+            bounds=([1e-9, 1.0], [1e-2, 80.0]),
+            maxfev=12000,
+        )
+        ALPHA0_fit, BETA0_fit = popt
+        fitted = BSIM4Params(**{**base.__dict__,
+                                 "ALPHA0": float(ALPHA0_fit),
+                                 "BETA0": float(BETA0_fit)})
+        # Per-curve R² for QC
+        per_curve = []
+        for V, I, g, b in zip(Vds_list, Isub_list, Vgs_list, Vbs_list):
+            pred = np.array([float(impact_ionization_bsim4(g, v, b, fitted))
+                             for v in V])
+            mask = (np.asarray(I) > 0) & np.isfinite(I)
+            I_arr = np.asarray(I)[mask]; p_arr = pred[mask]
+            ss_res = float(np.sum((I_arr - p_arr) ** 2))
+            ss_tot = float(np.sum((I_arr - I_arr.mean()) ** 2) + 1e-30)
+            per_curve.append({"Vgs": float(g), "Vbs": float(b),
+                              "r_squared": 1.0 - ss_res / ss_tot})
+        return {
+            "ALPHA0": float(ALPHA0_fit),
+            "BETA0": float(BETA0_fit),
+            "n_curves": len(Vgs_list),
+            "params": fitted,
+            "per_curve": per_curve,
+        }
+    except RuntimeError as e:
+        return {"error": str(e), "r_squared": 0.0}
 
 
 # ═══════════════════════════════════════════════════════════════════

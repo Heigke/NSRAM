@@ -19,7 +19,7 @@ Three fidelity levels:
 Backends: NumPy (CPU), PyTorch (NVIDIA CUDA / AMD ROCm / Apple MPS)
 """
 
-__version__ = "0.10.0"
+__version__ = "0.11.0"
 
 # Core
 from nsram.neuron import NSRAMNeuron
@@ -76,8 +76,20 @@ from nsram.characterize import (
 # Fitting & Comparison
 from nsram.fitting import (
     fit_iv_curve, fit_iv_family, fit_retention,
+    fit_bsim4_impact, fit_bsim4_family,
     monte_carlo, technology_comparison, compare_model_experiment,
     TECH_COMPARISON,
+)
+
+# BSIM4 — native impact-ionization + body-bias 2T floating-body model
+from nsram.bsim4 import (
+    BSIM4Params, BSIM4_PRESETS,
+    vth_bsim4, drain_current_bsim,
+    impact_ionization_bsim4,
+    gidl_current, gisl_current, body_diode_current,
+    body_charge_ode_bsim4,
+    TwoTransistorCell,
+    from_device_params,
 )
 
 # BEAM — Byte-level Embodied Associative Memory
